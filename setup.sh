@@ -34,8 +34,12 @@
 # finishes, open http://YOUR_IP:8000 and register immediately. If you see
 # "Setup window closed": sudo docker restart coolify  → reload the page.
 #
-# Verified against: Oracle Always Free docs (docs.oracle.com), Coolify docs
-# (coolify.io). Home region: US East (Ashburn).
+# Verified against the LIVE official docs on 2026-11-22: Oracle Always Free
+# Resources + Free Tier pages (docs.oracle.com — 1,500 OCPU-hours / 9,000
+# GB-hours = 2 OCPU + 12 GB A1, 200 GB combined storage, 5 backups, 10 TB
+# egress, 20 GB Object Storage, idle-instance criteria, card policy) and
+# Coolify docs (coolify.io — installer, ports, first-login window).
+# Home region: US East (Ashburn).
 # =============================================================================
 
 set -euo pipefail
@@ -231,8 +235,10 @@ step "6/8  Installing anti-reclaim keepalive service..."
 #   be classified as idle.
 #
 #   A fresh Coolify server uses only ~1.5-2 GB of 12 GB RAM (~13-17%) —
-#   BELOW the 20% memory line. Without help, an idle-flagged server gets
-#   STOPPED after 7 days, and permanently deleted ~90 days after that.
+#   BELOW the 20% memory line. Without help, Oracle may RECLAIM an
+#   idle-flagged instance (it gets stopped first, then eventually deleted
+#   — the documented criteria are above; the exact deletion timeline is
+#   not published by Oracle, so don't gamble on it).
 #
 #   THE FIX (installed here): a tiny background service that holds JUST
 #   ENOUGH RAM to keep memory utilization at ~26% — safely above the line.

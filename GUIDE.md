@@ -73,9 +73,9 @@
 | 🐏 RAM | **12 GB** | Plenty: Coolify ~1.5 GB + your apps |
 | 💾 Disk | **200 GB total** | Boot volume + block volumes COMBINED. We put all 200 on the boot volume |
 | 🌍 Bandwidth | **10 TB/month** | You will never come close |
-| 📦 Object Storage | 10 GB (+10 GB archive) | Great for database backups (separate from your 200 GB) |
+| 📦 Object Storage | **20 GB combined** (Standard + Infrequent Access + Archive tiers) + 50,000 API requests/month | For database backups (separate from your 200 GB). During the first 30-day trial you get 10+10+10 GB; once Always Free, it's 20 GB total |
 | 📸 Volume backups | **5 total** | Full disk snapshots — your disaster recovery |
-| ⏰ Hours | 1,500 OCPU-hours/month | Running 2 OCPU 24/7 all month ≈ 1,488 hours = still free |
+| ⏰ Hours | 1,500 OCPU-hours + 9,000 GB-hours per month | Running 2 OCPU + 12 GB 24/7 for a whole month ≈ 1,488 OCPU-hours / 8,928 GB-hours — exactly within the free allowance (Oracle's own wording: "equivalent to 2 OCPUs and 12 GB") |
 | ⚡ Duration | **Forever** | As long as the account isn't idle/abandoned (Part 9 handles this) |
 
 > ✅ **Coolify's official minimum requirements** (from coolify.io/docs): 2 CPU cores, 2 GB RAM, 10 GB disk. Your free VM has **2 cores, 12 GB RAM, 200 GB disk** — you exceed every minimum by a wide margin.
@@ -90,7 +90,7 @@
 | 4️⃣ | **Maximum 5 volume backups** | 1 weekly backup (Part 17) = you're safe forever. Creating a 6th just errors — but don't spam them anyway. |
 | 5️⃣ | **Boot volume performance stays "Balanced" (default)** | Higher performance tiers (VPUS) are paid. Never touch that setting. |
 
-💳 **About your card:** Oracle placed a temporary ~$1 hold at signup to verify it's real — that was refunded. On Always Free you receive **no invoice, no bill, nothing**. The Billing page shows $0.00 forever if you follow the rules above.
+💳 **About your card:** Oracle placed a temporary ~$1 hold at signup to verify it's real — that was refunded. On Always Free you receive **no invoice, no bill, nothing**. The Billing page shows $0.00 forever if you follow the rules above. This is Oracle's own written policy — direct quote from their Free Tier documentation: **"Your credit card will not be charged unless you upgrade your account."**
 
 ---
 
@@ -119,7 +119,7 @@ You'll see these words everywhere. Here's what they actually mean — no jargon.
 
 - ❌ **Plain Docker alone:** you'd hand-write config files for every app, every domain, every SSL certificate. Real work.
 - ❌ **Vercel/Netlify:** great, but costs money when you grow, and can't host databases or WordPress.
-- ✅ **Coolify:** one stack that includes Docker + dashboard + Traefik + one-click databases (PostgreSQL, MySQL, Redis, MongoDB…) + automatic SSL + scheduled backups. Huge community (62,000+ GitHub stars). The most Vercel-like self-hosted experience that exists.
+- ✅ **Coolify:** one stack that includes Docker + dashboard + Traefik + one-click databases (PostgreSQL, MySQL, Redis, MongoDB…) + automatic SSL + scheduled backups. Huge community (66,000+ GitHub stars — checked November 2026). The most Vercel-like self-hosted experience that exists.
 
 **The rule:** one server, one stack (Coolify). Don't install Nginx manually, don't install Portainer, don't `apt install postgresql` — Coolify provides all of it. Extra managers on top = the real thing to avoid.
 
@@ -143,7 +143,7 @@ You'll see these words everywhere. Here's what they actually mean — no jargon.
 
 - Your account starts as a **Free Trial**: $300 of credit for 30 days.
 - **Do nothing.** After 30 days it automatically converts to **Always Free** (the forever-free tier described in Part 0).
-- ⚠️ During the trial you *can* create bigger stuff than the free limits — but when the trial ends, anything above the free limits gets stopped. **Simplest path: only ever create the things in this guide, and you'll never notice the trial even ended.**
+- ⚠️ During the trial you *can* create bigger stuff than the free limits — and Oracle's documented trial-end rule is: **any Ampere A1 instances above 2 OCPUs / 12 GB total are disabled, then deleted after 30 days.** **Simplest path: only ever create exactly what this guide creates (Ubuntu 24.04, 2 OCPU, 12 GB, 200 GB boot volume), and you'll never notice the trial even ended.**
 
 > 💡 **The one button that must never be pressed:** "Upgrade to Pay As You Go" (sometimes shown as "Upgrade"). Golden Rule #1. A non-upgraded account *cannot* be charged — Oracle blocks paid resources with an error instead of billing you.
 
@@ -412,16 +412,18 @@ sudo bash setup.sh
 
 Oracle deletes free servers that look **abandoned**. Two separate rules:
 
-### Rule A — the "idle instance" rule
+### Rule A — the "idle instance" rule (Oracle's exact documented criteria)
 > Oracle reclaims an Always Free instance when, **for 7 days in a row, ALL THREE** are true:
 > - CPU utilization (95th percentile) **below 20%**
 > - Network utilization **below 20%**
 > - Memory utilization **below 20%** *(applies to ARM A1 shapes — that's you)*
+>
+> *(Source: docs.oracle.com → Always Free Resources → "Idle Compute Instances" — verified word-for-word.)*
 
 **The magic word is ALL.** Break *one* condition → your server can never be called idle.
 
 ### Rule B — the "abandoned account" rule
-> An account with **no console login for 30+ days** may be deemed abandoned.
+> An account that sits unused for an extended period — commonly reported as **~30 days without a console login** (from Oracle's Free Tier FAQ) — may be deemed abandoned and terminated. The exact number is no longer printed on Oracle's current doc pages, so treat it as "log in regularly and this rule can never touch you." The 2-week habit below makes it irrelevant regardless.
 
 ## Your protection (installed automatically by `setup.sh` — nothing for you to do)
 
@@ -569,7 +571,7 @@ Same 10 steps, just: new GitHub repo → new project → **new subdomain** (`blo
 | **Ghost** | blogging platform | ~200 MB |
 | **MinIO** | S3-compatible file storage | ~100 MB |
 
-Browse the full list: **+ Add New Resource → One-Click Service** (70+ templates).
+Browse the full list: **+ Add New Resource → One-Click Service** (dozens of official templates — and any Docker image from Docker Hub works too).
 
 ---
 
@@ -678,7 +680,9 @@ Because **everything lives on the ONE 200 GB boot volume, ONE backup = your ENTI
 
 ## 17.2 — Database backups (extra layer)
 
-In Coolify, each database you create has a **Backups** tab → set a schedule → destination: local disk (fine) or any S3-compatible storage (Oracle's free 10 GB Object Storage works great — S3 keys from Console → Profile → Customer Keys).
+In Coolify, each database you create has a **Backups** tab → set a schedule → destination: local disk (fine) or any S3-compatible storage (Oracle's free Object Storage works great — S3 keys from Console → Profile → Customer Keys).
+
+> ⚠️ **Keep Object Storage totals under 20 GB:** once your account becomes Always Free, the limit is 20 GB combined — and Oracle's documented rule is that objects above the limit **when the trial ends are deleted**. Database dumps are tiny (MBs, not GBs), so this is easy to stay under.
 
 Two layers, both free: weekly whole-server snapshot + per-database dumps. You're covered.
 
@@ -787,7 +791,7 @@ Print this. Live by it. It is **mathematically impossible** to be billed if all 
 - [ ] 📸 **≤ 5 volume backups** (your weekly schedule uses 1–4)
 - [ ] ⚡ Boot volume performance stays **Balanced** (never touch VPUS settings)
 
-**Verified billing behavior** (from Oracle's own documentation): a non-upgraded Always Free account *cannot* create paid resources — Oracle blocks the creation with an error. There is no invoice, no bill, no charge. The card on file is identity verification only.
+**Verified billing behavior** (from Oracle's own documentation): Oracle's written policy, direct quote: **"Your credit card will not be charged unless you upgrade your account."** In practice a non-upgraded account also can't create resources beyond the free limits — Oracle blocks the creation with an error instead of billing you. There is no invoice, no bill, no charge. The card on file is identity verification only.
 
 **The one temporary charge you may have seen:** the ~$1 signup verification hold — refunded within days. That's the only time your card was ever touched.
 
@@ -871,4 +875,4 @@ Check the RAM budget (Part 15) as you grow, and enjoy your free platform.
 
 ---
 
-*Verified against Oracle's official Always Free documentation (docs.oracle.com), Coolify's official documentation (coolify.io/docs — installation, firewall ports, first-login window), and real-world Oracle free-tier behavior. All IPs and keys in this guide are placeholders — yours stay on your PC only.*
+*Every factual claim was verified against the LIVE official documentation on November 22, 2026 — Oracle's Always Free Resources + Free Tier pages (docs.oracle.com: 1,500 OCPU-hours / 9,000 GB-hours = 2 OCPU + 12 GB, 200 GB combined storage, 5 backups, 10 TB egress, 20 GB Object Storage, idle-instance criteria, card policy, trial-end rules, ephemeral IP behavior) and Coolify's official docs (coolify.io/docs: installer, requirements, ports 22/80/443/8000/6001/6002, first-login window). Items that are community-reported or estimates are labeled as such in the text. All IPs and keys in this guide are placeholders — yours stay on your PC only.*
