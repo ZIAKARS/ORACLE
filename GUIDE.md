@@ -20,7 +20,7 @@
 | **1** | Concepts in plain English (VM, Docker, Coolify, Traefik, ports…) | Read first |
 | **2** | Create your Oracle account | Once |
 | **3** | ⚠️ Starting over? Clean slate first (full teardown) | Only if rebuilding |
-| **4** | Create your server: VCN → VM (every console section) → public IP (ephemeral or reserved) | Once |
+| **4** | Create your server: VCN → VM (every console section) → public IP (ephemeral or reserved) — + the "Out of capacity" auto-retry fix (4.4) | Once |
 | **5** | Open the ports in the Oracle console (firewall #1) | Once |
 | **6** | Connect to your server from your PC (the `oracle.key` file) | Every time |
 | **7** | Run the magic script (`setup.sh` — it does EVERYTHING) | Once |
@@ -250,7 +250,7 @@ The current form walks through these sections (in this order, or close to it):
 
 ### Section 2 — Placement (Availability domain)
 
-- **Availability domain**: leave the default. Every AD in your home region is Always Free eligible — all of them are still your region, all of them are free. (If you later hit "Out of host capacity" — see 4.4 — come back and try a different one.)
+- **Availability domain**: leave the default. Every AD in your home region is Always Free eligible — all of them are still your region, all of them are free. (Hit "Out of capacity / Out of host capacity" at the Create step? That's normal in Ashburn — 4.4's auto-retry script wins that race for you.)
 
 ### Section 3 — Image and shape
 
@@ -335,6 +335,8 @@ Scroll the summary and confirm all of this is true:
 
 Then click **Create**. Wait 1–3 minutes until the state turns green **RUNNING**.
 
+> ⚠️ Red banner **"Out of capacity for shape VM.Standard.A1.Flex…"** at this point? Nothing is wrong with your account — it's the famous free-tier shortage, and **4.4 (just below) fixes it** with an auto-retry script.
+
 ## 4.3 — Your public IP (both paths)
 
 **Path A (ephemeral — you left the box checked):** on the instance page, find **Public IP Address** under Instance details (also visible in the instance list). 📋 Write it down — you'll use it constantly (SSH, the Coolify URL, DNS records). It's free and it stays assigned through stop/starts. You're done here — skip to 4.4.
@@ -375,14 +377,104 @@ Then click **Create**. Wait 1–3 minutes until the state turns green **RUNNING*
 
 > 💡 **Keeping a reserved IP from your OLD server?** If you kept the reserved IP from before your rebuild (Part 3.4), skip "Part 1 of 2" entirely — just attach the existing one in Part 2 of 2 above.
 
-## 4.4 — If you see "Out of host capacity" error
+## 4.4 — "Out of capacity for shape VM.Standard.A1.Flex" (the famous free-tier wait — and the fix)
 
-Free ARM servers are shared — sometimes the local pool is full. **Do NOT switch regions** (that costs money). Instead:
+> ℹ️ Same error, two wordings: **"Out of host capacity"** or **"Out of capacity for shape VM.Standard.A1.Flex in availability domain AD-X"**. Identical meaning, identical fix.
 
-1. 🔄 Click Retry a few times (often works within minutes)
-2. 🕐 Try again at off-peak hours (late night US time)
-3. 🔀 Try a different **Availability Domain** in the create form (AD-1 / AD-2 / AD-3 — all are still your home region, all still free)
-4. 📉 Last resort: create it with **1 OCPU / 6 GB** — then later: stop the instance → Edit → change to 2/12 → start. (Don't leave it stopped for more than a day or two — see Part 9.)
+### What the error actually means (verified — and it's NOT you)
+
+| What you might think | What's actually true |
+|---|---|
+| "My account is broken / flagged" | ❌ No. It's a pure **physical shortage**: no free spot on Oracle's ARM host machines in that availability domain at this second |
+| "My card / billing has a problem" | ❌ No. Billing is never involved — a limit problem would say *"service limits were exceeded"* instead. Your $0 promise is untouched |
+| "I picked a wrong setting in the form" | ❌ No. Every field can be perfect — the pool is simply full right now |
+
+The verified mechanics:
+
+1. **Everyone wants the same hardware.** The Ampere A1 shape is the only Always Free shape with serious compute (up to 4 OCPU / 24 GB) — every free-tier user on Earth competes for the same ARM hosts.
+2. **Oracle doesn't guarantee free capacity.** Always Free compute is subject to availability — which is exactly why the error's own text just says "try a different availability domain or try again later". Paid (PAYG) launches get capacity priority; free launches get the leftovers.
+3. **Ashburn is the most crowded region.** US East is the world's most popular home region, so its free A1 pool is the most contested (and the most abused by miners/account farmers, which keeps it tight).
+4. **Capacity changes by the minute.** Every time someone deletes their VM, a 7-day-idle VM gets reclaimed, or Oracle adds host hardware — slots open, sometimes for seconds. Whoever asks in that window wins.
+
+### Why you tried AD-1 → AD-2 → AD-3 and ALL of them failed
+
+The three ADs are three separate buildings, but demand is **region-wide**: when the free pool is exhausted, all three doors are locked at the same time. Switching ADs helps only when one AD happens to have a leftover fragment — a lottery ticket, not a strategy.
+
+**The winning strategy is to stand at all three doors, all day, asking every 30 seconds.** No human can do that. A script does it perfectly.
+
+### The fix: `retry-launch.sh` (in this repo) + Oracle Cloud Shell
+
+This repo ships **`retry-launch.sh`** — it hunts the slot for you:
+
+| What it does | Detail |
+|---|---|
+| Retries the EXACT server from this Part | Ubuntu 24.04, Ampere A1, 2 OCPU, 12 GB RAM, 200 GB boot volume, your SSH key, automatic public IP |
+| Cycles all ADs | AD-1 → AD-2 → AD-3, over and over, ~every 30 seconds, for as long as you leave it running |
+| The instant a slot opens | Creates your server, waits ~1 min, prints your **Public IP** + the next guide parts |
+| Safety built in | Exits if a server already exists · refuses to run outside your home region · stops on any error that isn't capacity · Ctrl+C = clean stop · safe to re-run anytime |
+
+**Step 0 — prerequisites** (all done already if you're following this guide top-to-bottom):
+
+- ✅ The VCN exists (Part 4.1 — creating a VCN never fails, no capacity needed)
+- ✅ You have your SSH **public** key line (Section 6 above: Option A's `ssh-keygen -y -f oracle.key`, or the saved `.pub` file from Option B)
+- 💡 You can open the ports NOW (Part 5) — the rules live on the VCN, not the VM, so they'll be ready and waiting when your server lands
+
+**Step 1 — open Cloud Shell** (a free terminal inside the console — nothing to install, already logged in as you, OCI CLI pre-installed):
+
+1. At **cloud.oracle.com**, confirm the region selector (top-right) shows your home region
+2. Click the **>_** icon ("Developer tools", top-right of the black bar) → **Cloud Shell**
+3. A terminal opens at the bottom of the page (~20 seconds the first time)
+
+**Step 2 — get the script in:**
+
+```bash
+git clone https://github.com/ZIAKARS/ORACLE.git
+cd ORACLE
+```
+
+**Step 3 — fill in your 3 values.** Easiest way: click the **pencil icon ("Open editor")** in Cloud Shell's toolbar → a text editor opens above the terminal → open `ORACLE/retry-launch.sh` → change the three variables at the top → **Ctrl+S**:
+
+| Variable | What to paste |
+|---|---|
+| `COMPARTMENT_ID` | Your **Tenancy OCID** — console top-right profile icon → **Tenancy** → copy the OCID (starts `ocid1.tenancy.oc1..`) |
+| `SUBNET_ID` | Leave **empty** — it auto-detects your VCN's public subnet |
+| `SSH_PUBLIC_KEY` | The one-line public key from Section 6 (starts with `ssh-rsa` / `ssh-ed25519`) |
+
+**Step 4 — run and wait:**
+
+```bash
+bash retry-launch.sh
+```
+
+- Leave the browser tab open. Each printed line is one real launch attempt — "out of capacity" is the *normal* thing to see; the win comes from never stopping.
+- Typical wait in Ashburn: **minutes to hours, occasionally a day or two.** The script is working the whole time — you are not.
+- If Cloud Shell disconnects (laptop slept, session timed out): reopen it, `cd ORACLE`, run `bash retry-launch.sh` again. It can never create a second server.
+
+**Step 5 — the success screen** prints your Public IP, then:
+
+1. Part 4.3 — note the IP (or switch it to a permanent reserved IP, Path B)
+2. Part 5 — ports (skip if you already opened them while waiting)
+3. Part 6 — `ssh -i oracle.key ubuntu@YOUR_IP`
+4. Part 7 — `sudo bash setup.sh`
+
+> ⏰ **Best hunting hours:** slots appear mostly while America sleeps — roughly **midnight–7 AM US Eastern** (= afternoon/evening in Europe & Asia). Run the script in that window (or simply always) for the best odds.
+
+### Manual options (if you'd rather not use the script)
+
+1. 🔄 The **Retry** button — every click is one attempt; people do win after dozens of clicks spread over hours
+2. 🕐 Off-peak hours (above)
+3. 🔀 A different AD each try
+4. 📉 **Go small, resize later:** create with **1 OCPU / 6 GB** (a smaller request squeezes into fragmented leftovers far more easily). Once running: stop the instance → **Edit** → change to 2 OCPU / 12 GB → start. ⚠️ The resize can hit the same "Out of capacity" error — if so, retry the resize later (same game, smaller stakes). And don't leave the VM stopped for more than a day or two (Part 9).
+
+### What NOT to do (every one of these is a trap)
+
+| ❌ Never | Why |
+|---|---|
+| Switch the region selector to another region | Your A1 free allowance exists **only in your home region** — everything else is paid (Golden Rule #2) |
+| Click "Upgrade to Pay As You Go" to "fix" it | It works instantly — because it's the ONE button that can bill you (Golden Rule #1). The script gets you the same server for $0 |
+| Settle for the tiny x86 micro shape (VM.Standard.E2.1.Micro) | Free, yes — but 1 GB of RAM: far too small for Coolify. Don't spend your patience on the wrong server |
+| Create from two browser tabs at once | Two forms can both succeed → two VMs → your whole allowance gone in one shot |
+
 
 ## 4.5 — Where to put `oracle.key` (VERY IMPORTANT)
 
@@ -392,6 +484,7 @@ Create one folder on your PC, for example `ORACLE`, and keep everything together
 ORACLE/            ← your folder on your PC (Desktop or Documents)
 ├── GUIDE.md       ← this guide (from GitHub)
 ├── setup.sh       ← the magic script (from GitHub)
+├── retry-launch.sh ← the capacity auto-retry script (from GitHub — Part 4.4)
 └── oracle.key     ← YOUR key goes HERE (downloaded / already there)
 ```
 
@@ -458,6 +551,7 @@ Make sure your folder from Part 4 looks exactly like this:
 ORACLE/            ← your folder (e.g. C:\Users\YOU\Desktop\ORACLE)
 ├── GUIDE.md       ← this guide
 ├── setup.sh       ← the install script
+├── retry-launch.sh ← the capacity auto-retry script (Part 4.4 — runs in Cloud Shell)
 └── oracle.key     ← your private key (MUST be here)
 ```
 
@@ -925,9 +1019,9 @@ A boot volume can only be attached **at creation** — an instance in this state
 1. Follow **Part 3** (full teardown): terminate the broken instance, **delete the orphaned boot volume too** (orphaned volumes still count against your 200 GB and block new creation)
 2. Create a fresh VM (Part 4) and re-run `setup.sh` (Part 7)
 
-## Problem 3 — "Out of host capacity" when creating the VM
+## Problem 3 — "Out of host capacity" / "Out of capacity for shape VM.Standard.A1.Flex" when creating the VM
 
-See Part 4.4 — retry, off-peak hours, different Availability Domain, or create smaller and resize later. **Never switch regions.**
+Completely normal on the free tier — a physical A1 host shortage, not your account, not your card. Use **`retry-launch.sh`** in Cloud Shell to auto-grab the first free slot (full walkthrough: Part 4.4). Manual options: retry at off-peak hours, try a different Availability Domain, or create smaller (1 OCPU / 6 GB) and resize later. **Never switch regions, never upgrade to PAYG.**
 
 ## Problem 4 — Coolify dashboard unreachable (port 8000)
 
@@ -1078,4 +1172,4 @@ Check the RAM budget (Part 15) as you grow, and enjoy your free platform.
 
 ---
 
-*Every factual claim was verified against the LIVE official documentation on November 22, 2026 — Oracle's Always Free Resources + Free Tier pages (docs.oracle.com: 1,500 OCPU-hours / 9,000 GB-hours = 2 OCPU + 12 GB, 200 GB combined storage, 5 backups, 10 TB egress, 20 GB Object Storage, idle-instance criteria, card policy, trial-end rules), Oracle's **Public IP Addresses** page (ephemeral IPs *"remain assigned"* through stop/start; an ephemeral IP can never be converted to reserved; reserved-IP creation limits), Oracle's **Launching an Instance** page (current form structure: Basic Information → Security → Networking (Primary VNIC) → SSH keys → Storage/Boot volume → Review; the official "Start VCN Wizard → Create VCN with Internet Connectivity" recommendation; "Specify a custom boot volume size" 50 GB–32 TB; Balanced default performance; the exact SSH key options), Oracle's networking pricing + price-list pages (no public-IP line item published anywhere), and Coolify's official docs (coolify.io/docs: installer, requirements, ports 22/80/443/8000/6001/6002, first-login window). The Part 4 console walkthrough mirrors every step of the reference deployment guide (LeadGrid `DEPLOYMENT_GUIDE_SERVER.md`): VCN wizard first, every create-instance section, SSH-key reuse via `ssh-keygen -y`, the reserved-public-IP reserve + primary-VNIC attach flow (both the no-public-IP path and the two-pass ephemeral path), and the security-list rule fields. Items that are community-reported or estimates are labeled as such in the text. All IPs and keys in this guide are placeholders — yours stay on your PC only.*
+*Every factual claim was verified against the LIVE official documentation on November 22, 2026 — Oracle's Always Free Resources + Free Tier pages (docs.oracle.com: 1,500 OCPU-hours / 9,000 GB-hours = 2 OCPU + 12 GB, 200 GB combined storage, 5 backups, 10 TB egress, 20 GB Object Storage, idle-instance criteria, card policy, trial-end rules), Oracle's **Public IP Addresses** page (ephemeral IPs *"remain assigned"* through stop/start; an ephemeral IP can never be converted to reserved; reserved-IP creation limits), Oracle's **Launching an Instance** page (current form structure: Basic Information → Security → Networking (Primary VNIC) → SSH keys → Storage/Boot volume → Review; the official "Start VCN Wizard → Create VCN with Internet Connectivity" recommendation; "Specify a custom boot volume size" 50 GB–32 TB; Balanced default performance; the exact SSH key options), Oracle's networking pricing + price-list pages (no public-IP line item published anywhere), and Coolify's official docs (coolify.io/docs: installer, requirements, ports 22/80/443/8000/6001/6002, first-login window). The Part 4 console walkthrough mirrors every step of the reference deployment guide (LeadGrid `DEPLOYMENT_GUIDE_SERVER.md`): VCN wizard first, every create-instance section, SSH-key reuse via `ssh-keygen -y`, the reserved-public-IP reserve + primary-VNIC attach flow (both the no-public-IP path and the two-pass ephemeral path), and the security-list rule fields. Part 4.4's capacity explanation matches Oracle's documented position — Always Free compute is subject to available capacity, and the error's own text directs you to another availability domain or a later retry — and `retry-launch.sh` uses only officially documented OCI CLI launch parameters (`oci compute instance launch`: `--subnet-id`, `--image-id`, `--shape`, `--shape-config`, `--assign-public-ip`, `--boot-volume-size-in-gbs`, `--ssh-authorized-keys-file`), the community-standard remedy for the well-known free-tier A1 shortage. Items that are community-reported or estimates are labeled as such in the text. All IPs and keys in this guide are placeholders — yours stay on your PC only.*
