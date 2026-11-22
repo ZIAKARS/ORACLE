@@ -7,6 +7,7 @@
 > - 💰 **Cost:** $0 (Always Free tier — and this guide shows exactly how it can *never* charge you)
 > - 🧱 **Stack:** Ubuntu 24.04 + Coolify (Docker + Traefik included) + smart keepalive
 > - 💾 **Storage:** ONE 200 GB boot volume — everything on one disk, one backup covers it all
+> - 🌐 **Network:** one VCN via the "Internet Connectivity" wizard + your choice of public IP — the simple path AND the permanent (reserved) path are both in Part 4
 > - 📅 Checked against the **latest** Oracle and Coolify documentation (coolify.io/docs)
 
 ---
@@ -19,7 +20,7 @@
 | **1** | Concepts in plain English (VM, Docker, Coolify, Traefik, ports…) | Read first |
 | **2** | Create your Oracle account | Once |
 | **3** | ⚠️ Starting over? Clean slate first (full teardown) | Only if rebuilding |
-| **4** | Create your server (the VM with the 200 GB boot volume) | Once |
+| **4** | Create your server: VCN → VM (every console section) → public IP (ephemeral or reserved) | Once |
 | **5** | Open the ports in the Oracle console (firewall #1) | Once |
 | **6** | Connect to your server from your PC (the `oracle.key` file) | Every time |
 | **7** | Run the magic script (`setup.sh` — it does EVERYTHING) | Once |
@@ -73,6 +74,7 @@
 | 🐏 RAM | **12 GB** | Plenty: Coolify ~1.5 GB + your apps |
 | 💾 Disk | **200 GB total** | Boot volume + block volumes COMBINED. We put all 200 on the boot volume |
 | 🌍 Bandwidth | **10 TB/month** | You will never come close |
+| 🌐 Public IP | **1 per VM — free** | **Ephemeral** (auto-assigned): survives stop/start. **Reserved** (permanent): survives even full rebuilds — Oracle's pricing pages publish no charge for it (checked Nov 22, 2026). Both paths in Part 4.3. |
 | 📦 Object Storage | **20 GB combined** (Standard + Infrequent Access + Archive tiers) + 50,000 API requests/month | For database backups (separate from your 200 GB). During the first 30-day trial you get 10+10+10 GB; once Always Free, it's 20 GB total |
 | 📸 Volume backups | **5 total** | Full disk snapshots — your disaster recovery |
 | ⏰ Hours | 1,500 OCPU-hours + 9,000 GB-hours per month | Running 2 OCPU + 12 GB 24/7 for a whole month ≈ 1,488 OCPU-hours / 8,928 GB-hours — exactly within the free allowance (Oracle's own wording: "equivalent to 2 OCPUs and 12 GB") |
@@ -104,6 +106,10 @@ You'll see these words everywhere. Here's what they actually mean — no jargon.
 | **Boot volume** | The VM's hard disk. It comes with Ubuntu (the operating system) pre-installed. **Yours is 200 GB and holds everything.** |
 | **Block volume** | An *extra* hard disk you *could* plug in. **You don't need one** — this guide puts everything on the boot volume. (Part 16 explains it just in case.) |
 | **Ubuntu** | The operating system on your server — like Windows, but for servers, and free. |
+| **VCN** (Virtual Cloud Network) | Your own private network inside Oracle — a fresh, empty "network building" where your server lives. Created once, in Part 4.1, with a wizard. |
+| **Subnet** | A floor of that building. Your VM sits on the **public subnet** — the floor with a direct door to the internet. |
+| **Internet Gateway** | The building's main gate: connects your VCN to the internet. The VCN wizard creates it for you automatically. |
+| **VNIC** | Your VM's network socket inside the subnet — it holds the private + public IP addresses. You'll meet this word only when attaching a reserved IP (Part 4.3). |
 | **SSH + key file** | The locked door to your server. The key file (`oracle.key`) stays on YOUR PC — anyone holding it can enter, so never share it, never upload it to GitHub. |
 | **Port** | A numbered door on your server. Port 22 = SSH (you), 80/443 = websites (visitors), 8000 = Coolify dashboard (you), 6001/6002 = dashboard live-updates + web terminal (you). Everything else stays closed. |
 | **Security List** | Oracle's cloud firewall (firewall #1). You open ports here in the website console. |
@@ -153,6 +159,8 @@ You'll see these words everywhere. Here's what they actually mean — no jargon.
 
 > ⚠️ **Are you creating a server for the FIRST time ever? Skip to Part 4.**
 > This part is for when an old/broken server (or leftover parts of one) exists in your account. Leftovers block new creation and silently eat your free quota.
+>
+> 🗺️ **Your exact rebuild path:** this Part (delete) → Part 4 (VCN + VM + IP) → Part 5 (ports) → Part 6 (connect) → Part 7 (setup.sh) → Part 8 (Coolify login) → Part 11 (update DNS only if your IP changed). ~45–60 minutes total.
 
 Old parts must be deleted **in this exact order** (each step takes ~30 seconds):
 
@@ -164,26 +172,32 @@ Old parts must be deleted **in this exact order** (each step takes ~30 seconds):
    - If you forget: the volume becomes an "orphan" — it still counts against your 200 GB and blocks new servers. Fix in 3.2.
 4. Confirm → wait until the instance disappears from the list (1–2 min)
 
+> 💡 **Stuck in a transitional state** (e.g. "Stopping") with Terminate greyed out? Just wait — Oracle force-completes stuck transitions on its own (can take up to ~30 minutes). Come back when the list is empty.
+
 ## 3.2 — Delete any orphaned boot/block volumes
 
 1. ☰ Menu → **Storage → Block Storage → Boot Volumes**
    - Also check **Block Volumes** in the same menu
-2. If ANY volume is listed (not attached to anything): click it → **Terminate** → confirm
-3. ✅ The list must end up **empty**
+2. If the list is empty → skip this step (nothing to delete)
+3. If a volume shows **Attached** → open it → **Attached Instances** → **Detach** → wait for **Available**
+4. Then click its **⋮** (three dots) menu → **Terminate** → confirm
+5. ✅ The list must end up **empty**
 
 ## 3.3 — Delete the old VCN (if it exists)
 
 > Only needed if you're deleting everything (e.g., after a broken setup). If your VCN is healthy and you just want a new VM, you can keep it.
 
 1. ☰ Menu → **Networking → Virtual Cloud Networks**
-2. If a VCN exists with no instance using it: click it → **Terminate**
-   - If it complains about attached resources: there's still something attached (security list / subnet) — follow the console's hints, or delete the VCN's subnets first.
-3. A fresh VCN is created automatically with your next VM (Part 4), so deleting is safe.
+2. If a VCN exists with no instance using it: click its **⋮** (three dots) menu → **Delete**
+   - If it complains about attached resources: open the VCN → use its **Subnets**, **Gateways**, and **Security** tabs (tab row at the top of the VCN page) to delete the subnet, the Internet Gateway, and the security list first — then delete the VCN itself.
+3. A fresh VCN is created with your next server (Part 4.1), so deleting is safe — but keeping a healthy VCN is also fine (Part 4.2 reuses it).
 
 ## 3.4 — Check for leftover reserved public IPs
 
 1. ☰ Menu → **Networking → IP Management → Reserved Public IPs**
-2. If you ever created one and no instance uses it → **Delete** it (unattached leftovers are clutter)
+2. Decide per IP:
+   - 🗑️ **Delete it** if you're starting clean (unattached leftovers are clutter — and the reference repo's teardown deletes them too)
+   - 💾 **KEEP it** if your new server will re-use a permanent IP (Part 4.3, Path B): a kept reserved IP re-attaches to the new VM in ~1 minute and your DNS records keep working unchanged
 
 ## 3.5 — Verify everything is gone
 
@@ -195,48 +209,173 @@ You now have a 100% clean account. On to Part 4.
 
 ---
 
-# 🖥️ Part 4 — Create Your Server (the VM, ~10 minutes)
+# 🖥️ Part 4 — Create Your Server (VCN + VM + Public IP, ~15 minutes)
 
 > ⚠️ **Before you start:** look at the **top-right corner** of the Oracle console and confirm the region selector shows **US East (Ashburn)** — your home region. If it shows something else, click it and switch back. (Golden Rule #2.)
 
-## 4.1 — The exact clicks
+This part creates three things, in this order:
+
+| # | What you create | Where | Time |
+|---|---|---|---|
+| 1 | The **VCN** — your private network | 4.1 | 3 min |
+| 2 | The **VM** — your server (every section of the form) | 4.2 | 5 min |
+| 3 | Its **public IP** — find it, or attach a permanent reserved one | 4.3 | 2 min |
+
+> 💡 **The console re-orders its sections sometimes.** Oracle's own docs say: *"Information in the Console might be shown in a different order than is presented in this topic. Regardless of the order presented, all required and optional fields are the same."* Every field you'll meet is covered below — if your form shows them in a different order, fill them in the same way.
+
+## 4.1 — Create the VCN FIRST (your private network)
+
+> ⚠️ **Do this BEFORE the VM.** It's Oracle's own recommendation for first-time instance creators: use the **Start VCN Wizard** with the **"Create VCN with Internet Connectivity"** option — one flow creates the public subnet, the Internet Gateway, the NAT Gateway, and all the routing rules. Then every dropdown in the VM form is ready and waiting. (The VM form *can* also auto-create a basic VCN — but the wizard names things your way and takes 3 minutes.)
 
 1. 🌐 Log in at **https://cloud.oracle.com**
-2. ☰ Menu (top-left) → **Compute → Instances**
-3. Click **Create instance**
-4. Fill it in exactly like this:
+2. ☰ Menu (top-left) → **Networking → Virtual Cloud Networks**
+3. Click **Start VCN Wizard**
+4. Select **"Create VCN with Internet Connectivity"** → click the **Start VCN Wizard** button (bottom right)
+5. VCN name: `coolify-vcn` (anything you like). Leave everything else at the defaults:
+   - the wizard automatically creates the **Public Subnet** (where your VM will sit), the **Internet Gateway** (the door to the internet), and a **NAT Gateway** (an extra door your public-subnet VM doesn't route through — it sits idle and unused)
+   - if the wizard offers **IPv6**, leave it unchecked
+6. Click **Next** → **Create** → wait for the green **Completed** → **Close**
+7. ✅ **Verify:** back on the VCN list, your VCN shows State **Available** with an IPv4 CIDR like `10.0.0.0/16`. Click it: under **Subnets** you should see a **Public Subnet**, and under **Gateways** an **Internet Gateway**. That's everything the VM form needs.
 
-| Setting | What to choose | Why |
+## 4.2 — Create the VM (every section of the form)
+
+☰ Menu → **Compute → Instances** → click **Create instance**.
+
+The current form walks through these sections (in this order, or close to it):
+
+### Section 1 — Basic information
+
+- **Name**: `coolify-server` (anything you like)
+- **Create in compartment**: leave the default (root). Never heard of compartments? Doesn't matter — the default is correct for your whole account.
+
+### Section 2 — Placement (Availability domain)
+
+- **Availability domain**: leave the default. Every AD in your home region is Always Free eligible — all of them are still your region, all of them are free. (If you later hit "Out of host capacity" — see 4.4 — come back and try a different one.)
+
+### Section 3 — Image and shape
+
+Click **Edit** (in the Image and Shape box), then:
+
+| Setting | What to click | Why |
 |---|---|---|
-| **Name** | `coolify-server` | Anything you like |
-| **Image and Shape** → click **Edit** | | |
-| **Image** | **Canonical Ubuntu 24.04** (click "Change image" if it shows Oracle Linux) | ⚠️ Default is Oracle Linux — you MUST change it. Ubuntu 24.04 is a long-term-support (LTS) release, exactly what Coolify officially supports. |
-| **Shape** | **Ampere** (VM.Standard.A1.Flex) → **2 OCPUs, 12 GB RAM** | Your full free allowance on one machine |
-| **SSH keys** | Select **Generate a key pair** → click **Save Private Key** → save the file as **`oracle.key`** on your PC → also click **Save Public Key** | This key file IS your server's door key — Part 6 uses it. |
-| **Networking** (expand if needed) | Leave as-is: "Create new VCN" + "Assign a public IPv4 address" | Oracle auto-creates your network and gives a free public IP |
+| **Image** | **Change image** → **Canonical Ubuntu 24.04** (⚠️ NOT "Minimal") → **Select image** | The default is Oracle Linux — you MUST change it. Ubuntu 24.04 LTS is what Coolify officially supports. (22.04 also works — that's what the reference LeadGrid server used.) |
+| **Shape** | **Change shape** → Instance type: **Virtual machine** → Shape series: **Ampere** → **VM.Standard.A1.Flex** (tagged *Always Free eligible*) → **Select shape** | The ARM shape that's free forever |
+| **Number of OCPUs** | **2** | Your entire free CPU allowance on one machine |
+| **Amount of memory (GB)** | **12** | Your entire free RAM allowance on one machine |
 
-5. ⬇️ Scroll down to the **Boot volume** section → click **Specify a custom boot volume size**
+### Section 4 — Security (a short section on current consoles)
 
-| Setting | Value | Why |
-|---|---|---|
-| **Boot volume size** | **200 GB** | Uses your entire free 200 GB on ONE disk: everything (apps, databases, uploads) lives here, and ONE backup covers the whole server. Verified from Oracle's docs: up to 200 GB is Always Free. |
-| **VPUS/performance** | Leave at default (**Balanced**) | Higher tiers are paid (Golden Rule #5) |
+- **Shielded instance**: leave OFF (default)
+- **Confidential computing**: leave OFF (default)
 
-6. ✅ Click **Create**
-7. 📋 When it finishes (1–2 min, status turns green "RUNNING"), note down your server's **Public IP Address** (shown on the instance page) — you'll use it constantly. The default **ephemeral** public IP is **free** and **stays assigned even when you stop/start the VM** (verified from Oracle's docs) — you don't need to change anything here.
+You never need to touch anything here — the defaults are correct.
 
-> 🗂️ **Where to put `oracle.key` (VERY IMPORTANT):** create one folder on your PC, for example `ORACLE`, and keep everything together:
->
-> ```
-> ORACLE/            ← your folder on your PC (Desktop or Documents)
-> ├── GUIDE.md       ← this guide (from GitHub)
-> ├── setup.sh       ← the magic script (from GitHub)
-> └── oracle.key     ← YOUR key goes HERE (downloaded in the step above)
-> ```
->
-> The key never goes to the server and never goes to GitHub — it lives on your PC only. This repo's `.gitignore` blocks `*.key` files, so it can never be pushed by accident. **Never email it, never share it, never put it in any repo.**
+### Section 5 — Networking (labeled "Primary VNIC" / "Primary VNIC information" on some consoles)
 
-## 4.2 — If you see "Out of host capacity" error
+- **Virtual cloud network**: choose **Select existing virtual cloud network** → pick **coolify-vcn** (from 4.1)
+  - the form also offers "Create new virtual cloud network" — we don't need it, ours is ready
+- **Subnet**: choose **Select existing subnet** → pick the **Public Subnet** of your VCN (the name contains "public subnet"; if it says "regional" too, that's fine — regional subnets are what Oracle recommends)
+- **Private IPv4 address** (under "Configure Primary IP Address"): leave **Automatically assign** — the default is correct
+- **Public IPv4 address** — the one real decision in this form. Two paths:
+
+  | | Path A — simple (recommended for a first server) | Path B — permanent reserved IP (the reference repo's way) |
+  |---|---|---|
+  | **What to click** | Leave **"Automatically assign public IPv4 address"** CHECKED ✅ | UNCHECK it ⬜ — the VM boots with no public IP (that's fine: you attach yours in 4.3 before ever connecting) |
+  | **What you get** | A free **ephemeral** public IP, assigned automatically | A **reserved** public IP you attach yourself in 4.3 |
+  | **Survives stop/start?** | **Yes** — Oracle's docs, word for word: *"When you stop an instance, its ephemeral public IPs remain assigned to the instance."* | **Yes** |
+  | **Survives a full rebuild (terminate + new VM)?** | No — a rebuilt VM gets a new IP, so DNS records must be updated | **Yes** — re-attach the same IP to each new VM; DNS never changes |
+  | **Cost** | Free | Oracle's pricing pages publish **no charge** for reserved public IPs (checked Nov 22, 2026) — and your non-upgraded account can't be billed anyway (Golden Rule #1) |
+
+  > ❓ **"Can't I just make the auto-assigned IP permanent later?"** **No — never.** Oracle's docs are explicit: *"After you create a given public IP object, you can't change which type it is."* An ephemeral IP can never be converted to Reserved, and the create form has no option to auto-assign a reserved one. The only way to a permanent IP is Path B + step 4.3.
+
+- **IPv6**: leave unchecked / skip
+- **Show advanced options** (networking): skip entirely — DNS record, hostname, network security groups, launch options: all stay default, all correct for this guide
+
+### Section 6 — SSH keys (your server's door key)
+
+Pick ONE:
+
+**Option A — REUSE the key you already have (recommended when rebuilding — nothing changes on your PC):**
+
+1. On your PC, open **Git Bash** (Windows) or Terminal (Mac/Linux) in your `ORACLE` folder and run:
+   ```bash
+   ssh-keygen -y -f oracle.key
+   ```
+   It prints one line starting with `ssh-rsa AAAA…` (or `ssh-ed25519 AAAA…`) — that's your **public** key. Copy the entire line (select it in the window → right-click → Copy). If you get `No such file or directory`: the old key isn't on this PC — use Option B.
+2. On the Oracle form select **"Paste public keys"** → paste the line into the box. (It must start with `ssh-rsa` / `ssh-ed25519` — never paste the private key, which starts with `-----BEGIN`.)
+3. Your private key file stays exactly where it is — nothing moves, nothing is uploaded.
+
+**Option B — Generate a brand-new key pair (first-time setups):**
+
+1. Select **"Generate a key pair"** (some consoles word it "Generate a key pair for me")
+2. Click **Save Private Key** → save the file as **`oracle.key`** into your `ORACLE` folder (layout in 4.5)
+3. Click **Save Public Key** too (optional, but take it — handy)
+
+> 🔑 The private key IS your server's front-door key: anyone holding it can enter. It never leaves your PC. If you ever lose it, you can't SSH in — you'd have to recreate the instance with a new key.
+
+### Section 7 — Storage (the boot volume)
+
+1. ✅ Check **"Specify a custom boot volume size"**
+2. **Boot volume size (GB)**: **200**
+   - Your entire free 200 GB on ONE disk: apps, databases, uploads — everything lives here and ONE backup covers the whole server. (The field allows 50 GB – 32 TB; staying ≤ 200 GB is what's free.)
+3. Leave everything else as-is:
+   - **Volume performance**: **Balanced** (default — higher tiers are paid, Golden Rule #5)
+   - **Use in-transit encryption**: unchecked (default) — fine
+   - Backup policy / encryption key / tags: untouched
+
+### Section 8 — Review
+
+Scroll the summary and confirm all of this is true:
+
+- Image: **Canonical Ubuntu 24.04** (or 22.04) — *not* Oracle Linux, *not* "Minimal"
+- Shape: **VM.Standard.A1.Flex** — 2 OCPUs, 12 GB memory
+- Boot volume: **200 GB** — marked *Always Free eligible*
+- Network: **coolify-vcn** / Public Subnet — and your public-IP choice (Path A checked / Path B unchecked)
+- Your SSH key is listed
+
+Then click **Create**. Wait 1–3 minutes until the state turns green **RUNNING**.
+
+## 4.3 — Your public IP (both paths)
+
+**Path A (ephemeral — you left the box checked):** on the instance page, find **Public IP Address** under Instance details (also visible in the instance list). 📋 Write it down — you'll use it constantly (SSH, the Coolify URL, DNS records). It's free and it stays assigned through stop/starts. You're done here — skip to 4.4.
+
+**Path B (reserved IP) — Part 1 of 2: reserve the address**
+
+1. ☰ Menu → **Networking → IP management → Reserved public IPs**
+2. Click **Reserve public IP address**
+3. The **"Reserve public IP address"** dialog opens. Fill it in exactly like this:
+   - **Reserved public IP address name** *(marked Required)*: `coolify-ip` (anything you like)
+   - **Create in Compartment**: leave as your root compartment (default)
+   - **IP address source compartment**: leave as-is — same root compartment
+   - **IP address source**: **Oracle** (the default — Oracle's pool of public IPs; you have no pools of your own)
+   - **Tags**: ignore this section completely
+4. Click the **Reserve public IP address** button at the bottom of the dialog (⚠️ not "Cancel", not "Save as stack")
+5. ✅ **Verify:** your reserved IP now appears in the list — State **Available**, VNIC column empty (not attached yet — that's expected, it's next). You cannot choose the IP number yourself: Oracle picks it. (This half can be done before or after creating the VM — order doesn't matter.)
+
+**Path B — Part 2 of 2: attach it to your VM (exact clicks)**
+
+1. ☰ Menu → **Compute → Instances** → click your instance's name (e.g. `coolify-server`)
+2. On the instance page, click the **Networking** tab (tab row at the top: Details | **Networking** | Storage | Security | …)
+3. In the **VNICs** list, click the **primary VNIC's name** — titled with your instance name, a green **Available** badge, subtitle `VNIC`
+4. On the VNIC page, click the **IP administration** tab (tab row: Details | **IP administration** | Monitoring | Security | Tags)
+5. You're now on the **IPv4 addresses** table (columns: Private IP address | Public IP address | IP lifetime | …). Find the row whose Private IP address reads `10.0.0.x (Primary IP)`
+6. At the far-right end of that row, click the **⋯** (ellipsis) menu → **Edit**. The **Edit Private IP Address** dialog opens
+7. What you see depends on the checkbox from Section 5:
+
+   **If you UNCHECKED it (the recommended Path B):** the dialog shows **No public IP** (selected) and **Reserved public IP** →
+   1. Select **Reserved public IP** → a **Reserved Public IP Address** dropdown appears
+   2. In the dropdown, select your reserved IP by name: **coolify-ip** → click **Update**. Done — go to step 8.
+
+   **If you LEFT it checked (the VM booted with a temporary ephemeral IP):** the dialog shows only **No public IP** and **Ephemeral public IP** (selected). ⚠️ **OCI quirk:** while the ephemeral IP is assigned, the "Reserved public IP" option is hidden — the private IP must have NO public IP first. It takes two passes:
+   1. **Pass 1 — remove the temporary IP:** select **No public IP** → click **Update**. The table refreshes with an empty **Public IP address** cell (the ephemeral IP is released; the instance temporarily has no public IP — expected and safe, nothing is running on the server yet)
+   2. **Pass 2 — attach the reserved IP:** open the **⋯** menu on the same `10.0.0.x (Primary IP)` row → **Edit** again. Now **Reserved public IP** is visible → select it → in the **Reserved Public IP Address** dropdown pick **coolify-ip** → click **Update**
+
+8. ✅ **Verify:** the **IPv4 addresses** table refreshes — the **Public IP address** column shows your reserved IP (e.g. `132.226.x.x`) and **IP lifetime** reads **Reserved**
+9. 📋 Write that IP down — it's your server's address for everything that follows. It survives stop/start, reboots, AND full rebuilds (re-attach it to each new VM in these same clicks).
+
+> 💡 **Keeping a reserved IP from your OLD server?** If you kept the reserved IP from before your rebuild (Part 3.4), skip "Part 1 of 2" entirely — just attach the existing one in Part 2 of 2 above.
+
+## 4.4 — If you see "Out of host capacity" error
 
 Free ARM servers are shared — sometimes the local pool is full. **Do NOT switch regions** (that costs money). Instead:
 
@@ -244,6 +383,19 @@ Free ARM servers are shared — sometimes the local pool is full. **Do NOT switc
 2. 🕐 Try again at off-peak hours (late night US time)
 3. 🔀 Try a different **Availability Domain** in the create form (AD-1 / AD-2 / AD-3 — all are still your home region, all still free)
 4. 📉 Last resort: create it with **1 OCPU / 6 GB** — then later: stop the instance → Edit → change to 2/12 → start. (Don't leave it stopped for more than a day or two — see Part 9.)
+
+## 4.5 — Where to put `oracle.key` (VERY IMPORTANT)
+
+Create one folder on your PC, for example `ORACLE`, and keep everything together:
+
+```
+ORACLE/            ← your folder on your PC (Desktop or Documents)
+├── GUIDE.md       ← this guide (from GitHub)
+├── setup.sh       ← the magic script (from GitHub)
+└── oracle.key     ← YOUR key goes HERE (downloaded / already there)
+```
+
+The key never goes to the server and never goes to GitHub — it lives on your PC only. This repo's `.gitignore` blocks `*.key` files, so it can never be pushed by accident. **Never email it, never share it, never put it in any repo.**
 
 ## ⚠️ Two hard rules about the boot volume (learned the hard way)
 
@@ -257,28 +409,34 @@ Free ARM servers are shared — sometimes the local pool is full. **Do NOT switc
 By default your server only accepts SSH. Visitors need ports 80/443, and you need 8000/6001/6002 for the Coolify dashboard. *(Port list verified from Coolify's official firewall docs.)*
 
 1. ☰ Menu → **Networking → Virtual Cloud Networks** (VCN)
-2. Click your VCN's name (it was auto-created, usually starts with `vcn-`)
-3. In the left sidebar under **Resources**, click **Security Lists**
-4. Click **Default Security List for …**
-5. Click **Add Ingress Rules** and add this rule, then repeat for each port:
+2. Click your VCN's name (**coolify-vcn**, from Part 4.1)
+3. Open its security lists — two doors lead to the same place: click the **Security** tab on the VCN page, or the left-sidebar **Resources → Security Lists**
+4. Click **Default Security List for coolify-vcn**
+5. Look at the **Ingress Rules** list first: it already contains the **SSH (port 22)** rule (the VCN wizard created it — that's the door you'll use to connect). Leave it alone — don't duplicate it.
+6. Click **Add Ingress Rules** and enter the first rule:
 
 | Field | Value |
 |---|---|
+| Stateless | leave unchecked (default) |
 | Source Type | CIDR |
 | Source CIDR | `0.0.0.0/0` (means "from anywhere") |
 | IP Protocol | TCP |
-| Destination Port Range | see below |
+| Source Port Range | *(leave empty)* |
+| Destination Port Range | `443` |
 
-Add **six** separate rules:
+7. Click **+ Another Ingress Rule** and repeat for the next port — add all FIVE in one dialog:
 
 | Port | Who uses it |
 |---|---|
-| ✅ `22` | SSH — you connecting |
 | ✅ `80` | HTTP — websites + Let's Encrypt certificate checks |
 | ✅ `443` | HTTPS — websites with SSL |
 | ✅ `8000` | Coolify dashboard (`http://YOUR_IP:8000`) |
 | ✅ `6001` | Dashboard live-updates (deployment logs streaming in real time) |
 | ✅ `6002` | Coolify web terminal (command box inside the dashboard) |
+
+8. Click **Add Ingress Rules** (the button at the bottom) to save them all. ✅ The rules appear in the list immediately — no waiting.
+
+> 💡 Prefer adding them one at a time? Same result — just reopen **Add Ingress Rules** for each port. And if port 22 is missing from the list for any reason, add it the same way (Source `0.0.0.0/0`, TCP, Destination Port `22`).
 
 > 🔒 **Optional (nicer security):** for ports 22, 8000, 6001 and 6002, put *your home's IP* instead of `0.0.0.0/0` (Google "what is my IP"). Then only your house can reach those doors. If your home IP ever changes and you get locked out, just update the rule back. Ports 80/443 must stay `0.0.0.0/0` — that's your visitors.
 
@@ -330,9 +488,29 @@ ssh -i oracle.key ubuntu@YOUR_SERVER_IP
 
 **First connection:** it asks `Are you sure you want to continue connecting?` → type `yes`.
 
+> 💡 **Stop typing the IP every time (optional):** run this once in Git Bash / Terminal on your PC:
+> ```bash
+> echo 'export SERVER_IP=YOUR_SERVER_IP' >> ~/.bashrc && source ~/.bashrc
+> ```
+> From then on, `ssh -i oracle.key ubuntu@$SERVER_IP` works in any new window with zero editing. Any command in this guide that says `YOUR_SERVER_IP` can use `$SERVER_IP` instead.
+
 ✅ When you see a welcome message ending in a `$` prompt — **you're inside your server!** Everything you type now runs on the server, not your PC.
 
-## 6.4 — Disconnect
+## 6.4 — ⚠️ Rebuilt your server? "REMOTE HOST IDENTIFICATION HAS CHANGED!" (normal, 30-second fix)
+
+If you recreated your server (Part 3) — or moved a reserved IP to a new VM — SSH refuses to connect and prints a big scary block ending in `REMOTE HOST IDENTIFICATION HAS CHANGED!`. **That's normal and safe:** your PC memorized the OLD server's fingerprint and is (correctly) suspicious that the new server isn't it. Fix, on your PC (Git Bash / Terminal):
+
+```bash
+ssh-keygen -R YOUR_SERVER_IP
+```
+
+Then connect again → it asks `Are you sure you want to continue connecting?` → `yes`.
+
+- **Git Bash quirk:** if the entry still shows after `-R`, open `~/.ssh/known_hosts` in a text editor, delete the line containing your server's IP, save, reconnect.
+- **Still fighting it?** `rm ~/.ssh/known_hosts` deletes the whole list — it rebuilds itself as you reconnect (you'll re-confirm each server once).
+- **Harmless warning:** `hostfile_replace_entries: link ... Permission denied` sometimes appears on Windows Git Bash — it only means Git Bash couldn't update its known-computers list. Your connection works fine; ignore it.
+
+## 6.5 — Disconnect
 
 ```bash
 exit
@@ -497,6 +675,8 @@ Your server is already built securely by default. This checklist makes it airtig
 
 Your server has an IP like `140.238.x.x` — but visitors type `yourdomain.com`. Cloudflare (free) connects them AND adds CDN speed + DDoS protection + hides your IP.
 
+> 🔄 **Just rebuilt your server (Part 3)?** If you re-attached your **reserved** IP (Part 4.3, Path B): **zero DNS changes needed** — same IP, same records, done. If you're on a **new ephemeral IP**: edit both A records (`@` and `www`) below and swap in the new IP — Cloudflare applies it in seconds.
+
 > 💡 **No domain yet?** Buy one anywhere (Namecheap, Cloudflare Registrar, ~$10/year). Then add it to Cloudflare: dash.cloudflare.com → **Add site** → follow the nameserver steps (Cloudflare shows you exactly which 2 nameservers to set at your registrar — copy-paste, wait up to 24h, usually minutes).
 
 ## The setup
@@ -646,10 +826,27 @@ Your server has **12 GB RAM**. Here's the honest budget:
 
 **The math problem:** free storage = 200 GB **total** (boot + block combined). If your boot volume is already 200 GB, adding a block volume = **paid** (breaks Golden Rule #3!). To do it free you'd have to recreate the VM with a smaller boot volume (e.g. 150 GB boot + 50 GB block).
 
-**If you ever do it (concise version):**
+**If you ever do it:**
 
-1. Console → Storage → Block Volumes → Create (in your home region!) → Attach to your VM (Paravirtualized)
-2. On the server:
+**Console side:**
+
+1. ☰ Menu → **Storage → Block Volumes** → **Create Block Volume** and fill in:
+   - **Name:** `data-vol` (anything you like)
+   - **Create in compartment:** your root compartment (default)
+   - **Availability domain:** the one your VM lives in (labels show the free-eligible ADs)
+   - **Volume size and performance:** select **Custom** → type the size (e.g. `50` GB — remember: boot + block must stay ≤ 200 GB total)
+   - **Volume performance:** **Balanced** (default — Golden Rule #5)
+   - Tags / Reservations / Backup policies / Cross-region replication / encryption: all default
+2. Click **Create block volume** → wait for **Available** (~10 seconds)
+3. On the volume's page → left **Resources → Attached Instances** → **Attach to Instance**:
+   - **Attachment type:** **Paravirtualized** (the default — simplest and boot-safe: the disk shows up as `/dev/sdb` automatically and is presented before the OS boots, so it can never hang a boot)
+   - **Select instance:** your VM
+   - **Attach as:** Read/Write (default)
+4. Click **Attach** → wait for **Attached** (~10 seconds). (Only if Paravirtualized is somehow unavailable in your region: attach as **iSCSI** instead and run the 3 `sudo iscsiadm …` commands Oracle shows you under Attached Instances → ⋮ → iSCSI Commands & Information. ⚠️ Never run the `-u` or `-o delete` commands from that dialog — those DETACH and DELETE the volume.)
+
+**Server side (SSH in):**
+
+5. On the server:
    ```bash
    lsblk                                  # find the new empty disk, e.g. /dev/sdb
    sudo mkfs.ext4 /dev/sdb                # format ONCE (like a new USB stick)
@@ -659,7 +856,7 @@ Your server has **12 GB RAM**. Here's the honest budget:
    echo '/dev/sdb /mnt/data ext4 defaults,noatime,_netdev,nofail 0 2' | sudo tee -a /etc/fstab
    df -h /mnt/data                        # ✅ verify
    ```
-3. Point what you want at `/mnt/data` (e.g. Coolify backup destination, app upload folders).
+6. Point what you want at `/mnt/data` (e.g. Coolify backup destination, app upload folders).
 
 Again: **skip this part** unless you have a specific reason. One disk = one backup = simple life.
 
@@ -730,7 +927,7 @@ A boot volume can only be attached **at creation** — an instance in this state
 
 ## Problem 3 — "Out of host capacity" when creating the VM
 
-See Part 4.2 — retry, off-peak hours, different Availability Domain, or create smaller and resize later. **Never switch regions.**
+See Part 4.4 — retry, off-peak hours, different Availability Domain, or create smaller and resize later. **Never switch regions.**
 
 ## Problem 4 — Coolify dashboard unreachable (port 8000)
 
@@ -778,6 +975,10 @@ sudo journalctl --vacuum-size=200M        # trim logs now
 - Coolify → the app → is it red? Click **Redeploy** (often a transient build issue)
 - Check the app's **Logs** tab in Coolify
 - Still stuck? **Delete + recreate** the resource (Part 12 step 🗑️) — with weekly backups + code on GitHub, recreating an app is always safe
+
+## Problem 11 — SSH refuses: "REMOTE HOST IDENTIFICATION HAS CHANGED!"
+
+Normal after rebuilding your server or moving a reserved IP — your PC just remembers the old server's fingerprint. 30-second fix: `ssh-keygen -R YOUR_SERVER_IP` → reconnect → `yes`. Full instructions: Part 6.4.
 
 ---
 
@@ -834,8 +1035,10 @@ sudo docker system prune -f
 ```
 ① Sign up            oraclecloud.com → card + phone → home region US East (Ashburn)
         ↓
-② Create server      Ubuntu 24.04 · Ampere 2 OCPU/12 GB · 200 GB boot volume
+② Network + server   VCN wizard ("Create VCN with Internet Connectivity") → Create instance:
+                     Ubuntu 24.04 · Ampere 2 OCPU/12 GB · 200 GB boot volume
                      → save oracle.key into your ORACLE folder → note the Public IP
+                     (reserved IP = permanent: re-attach it after every rebuild)
         ↓
 ③ Open ports         Console: VCN → Security List → 22, 80, 443, 8000, 6001, 6002
         ↓
@@ -875,4 +1078,4 @@ Check the RAM budget (Part 15) as you grow, and enjoy your free platform.
 
 ---
 
-*Every factual claim was verified against the LIVE official documentation on November 22, 2026 — Oracle's Always Free Resources + Free Tier pages (docs.oracle.com: 1,500 OCPU-hours / 9,000 GB-hours = 2 OCPU + 12 GB, 200 GB combined storage, 5 backups, 10 TB egress, 20 GB Object Storage, idle-instance criteria, card policy, trial-end rules, ephemeral IP behavior) and Coolify's official docs (coolify.io/docs: installer, requirements, ports 22/80/443/8000/6001/6002, first-login window). Items that are community-reported or estimates are labeled as such in the text. All IPs and keys in this guide are placeholders — yours stay on your PC only.*
+*Every factual claim was verified against the LIVE official documentation on November 22, 2026 — Oracle's Always Free Resources + Free Tier pages (docs.oracle.com: 1,500 OCPU-hours / 9,000 GB-hours = 2 OCPU + 12 GB, 200 GB combined storage, 5 backups, 10 TB egress, 20 GB Object Storage, idle-instance criteria, card policy, trial-end rules), Oracle's **Public IP Addresses** page (ephemeral IPs *"remain assigned"* through stop/start; an ephemeral IP can never be converted to reserved; reserved-IP creation limits), Oracle's **Launching an Instance** page (current form structure: Basic Information → Security → Networking (Primary VNIC) → SSH keys → Storage/Boot volume → Review; the official "Start VCN Wizard → Create VCN with Internet Connectivity" recommendation; "Specify a custom boot volume size" 50 GB–32 TB; Balanced default performance; the exact SSH key options), Oracle's networking pricing + price-list pages (no public-IP line item published anywhere), and Coolify's official docs (coolify.io/docs: installer, requirements, ports 22/80/443/8000/6001/6002, first-login window). The Part 4 console walkthrough mirrors every step of the reference deployment guide (LeadGrid `DEPLOYMENT_GUIDE_SERVER.md`): VCN wizard first, every create-instance section, SSH-key reuse via `ssh-keygen -y`, the reserved-public-IP reserve + primary-VNIC attach flow (both the no-public-IP path and the two-pass ephemeral path), and the security-list rule fields. Items that are community-reported or estimates are labeled as such in the text. All IPs and keys in this guide are placeholders — yours stay on your PC only.*
