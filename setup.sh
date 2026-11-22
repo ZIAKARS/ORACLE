@@ -6,8 +6,10 @@
 #
 #   ✔ 1/8  Updates all system packages (security patches)
 #   ✔ 2/8  Creates an 8 GB swap file (prevents crashes during app builds)
-#   ✔ 3/8  Opens ports 80 / 443 / 8000 in iptables (Oracle's HIDDEN 2nd
-#          firewall — the #1 reason sites "don't load" on Oracle)
+#   ✔ 3/8  Opens ports 80 / 443 / 8000 / 6001 / 6002 in iptables (Oracle's
+#          HIDDEN 2nd firewall — the #1 reason sites "don't load" on Oracle).
+#          6001 = Coolify dashboard live-updates, 6002 = Coolify web terminal
+#          (port list verified from Coolify's official firewall docs)
 #   ✔ 4/8  Enables automatic security updates (Ubuntu unattended-upgrades)
 #   ✔ 5/8  Installs Coolify — your own self-hosted "Vercel"
 #          (Docker + Coolify dashboard + Traefik, all automatic)
@@ -17,15 +19,20 @@
 #   ✔ 8/8  Prints your Coolify address + exactly what to do next
 #
 # STORAGE MODEL: everything lives on the ONE 200 GB boot volume (created at
-# VM creation). No block volume is used or needed. See guide.md Part 13 if
+# VM creation). No block volume is used or needed. See GUIDE.md Part 16 if
 # you ever want to add one.
 #
 # SAFE TO RE-RUN (idempotent): every step checks first and skips if done.
 #
-# WHERE TO RUN: ON the Oracle VM, after SSH-ing in (see guide.md Part 6):
+# WHERE TO RUN: ON the Oracle VM, after SSH-ing in (see GUIDE.md Part 6/7):
 #
 #   git clone https://github.com/ZIAKARS/ORACLE.git
 #   cd ORACLE && sudo bash setup.sh
+#
+# ⏱ IMPORTANT (from Coolify's latest docs): the FIRST admin account can only
+# be registered within 10 MINUTES of Coolify starting. When this script
+# finishes, open http://YOUR_IP:8000 and register immediately. If you see
+# "Setup window closed": sudo docker restart coolify  → reload the page.
 #
 # Verified against: Oracle Always Free docs (docs.oracle.com), Coolify docs
 # (coolify.io). Home region: US East (Ashburn).
@@ -131,9 +138,9 @@ sysctl -w vm.swappiness=10 >/dev/null 2>&1 || true
 info "Swappiness set to 10 (swap only when RAM is low)"
 
 # ═════════════════════════════════════════════════════════════════════════════
-# STEP 3/8 — Open ports 80 / 443 / 8000 in iptables (Oracle's 2nd firewall)
+# STEP 3/8 — Open ports 80 / 443 / 8000 / 6001 / 6002 (Oracle's 2nd firewall)
 # ═════════════════════════════════════════════════════════════════════════════
-step "3/8  Opening ports 80 / 443 / 8000 in iptables (Oracle's hidden firewall)..."
+step "3/8  Opening ports 80 / 443 / 8000 / 6001 / 6002 in iptables (Oracle's hidden firewall)..."
 
 # WHY THIS IS NEEDED (verified the hard way):
 #   Oracle Cloud Ubuntu images ship a default REJECT rule in iptables that
@@ -148,12 +155,17 @@ step "3/8  Opening ports 80 / 443 / 8000 in iptables (Oracle's hidden firewall).
 #   Port 80   = HTTP  (websites, Let's Encrypt certificate checks)
 #   Port 443  = HTTPS (websites with SSL)
 #   Port 8000 = Coolify dashboard (http://YOUR_IP:8000)
+#   Port 6001 = Coolify dashboard LIVE-UPDATES (streaming deploy logs)
+#   Port 6002 = Coolify WEB TERMINAL (command box inside the dashboard)
+#   (6001/6002 verified from Coolify's official firewall documentation;
+#    after you later put the dashboard behind a domain, those three ports
+#    can be closed again — the dashboard then travels via 443.)
 port_open() {
   iptables -C INPUT -m state --state NEW -p tcp --dport "$1" -j ACCEPT 2>/dev/null && return 0
   iptables -C INPUT -p tcp --dport "$1" -j ACCEPT 2>/dev/null && return 0
   return 1
 }
-for PORT in 80 443 8000; do
+for PORT in 80 443 8000 6001 6002; do
   if port_open "$PORT"; then
     info "Port ${PORT} already open: skipping"
   else
@@ -172,7 +184,7 @@ done
 DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent >/dev/null 2>&1 || true
 netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 systemctl enable netfilter-persistent 2>/dev/null || true
-info "iptables rules saved (survive reboots). SSH 22 / HTTP 80 / HTTPS 443 / Coolify 8000 open — everything else stays blocked"
+info "iptables rules saved (survive reboots). SSH 22 / HTTP 80 / HTTPS 443 / Coolify 8000+6001+6002 open — everything else stays blocked"
 
 # NOTE: we intentionally do NOT enable ufw (Ubuntu's simple firewall).
 # Docker + ufw conflict (Docker bypasses ufw), and Oracle already gives us
@@ -433,22 +445,29 @@ echo "    • RAM:  ${RAM_USED}"
 echo "    • Swap: ${SWAP_USED}"
 echo "    • Disk: ${DISK_USAGE}"
 echo "    • Keepalive: $(systemctl is-active oracle-keepalive) ($(systemctl is-enabled oracle-keepalive) on boot)"
+echo "      ↳ the anti-reclaim bodyguard: INSTALLED and running (auto-starts every"
+echo "        boot) — Oracle can never flag this server as idle. GUIDE.md Part 9."
 echo ""
 echo "  ── YOUR COOLIFY DASHBOARD ─────────────────────────"
 echo ""
 echo "    ➡️  Open in your browser:  http://${PUB_IP}:8000"
 echo ""
-echo "    First visit: click 'Register' and create your admin account."
+echo "    ⏱ REGISTER WITHIN 10 MINUTES (Coolify's rule, from its latest docs):"
+echo "       click 'Register' NOW and create your admin account."
+echo "       If it says 'Setup window closed':  sudo docker restart coolify"
+echo "       then reload the page and register immediately."
+echo ""
 echo "    (If the page does NOT load: you still need to open port 8000"
-echo "     in the Oracle console — guide.md Part 4 shows exactly how.)"
+echo "     in the Oracle console — GUIDE.md Part 5 shows exactly how.)"
 echo ""
-echo "  ── WHAT HAPPENS NEXT (guide.md has every step) ────"
+echo "  ── WHAT HAPPENS NEXT (GUIDE.md has every step) ────"
 echo ""
-echo "    1. guide.md Part 7  → Coolify first login"
-echo "    2. guide.md Part 8  → how your server stays alive (keepalive)"
-echo "    3. guide.md Part 9  → connect your domain (Cloudflare)"
-echo "    4. guide.md Part 10 → deploy your first Next.js app"
-echo "    5. guide.md Part 11 → install WordPress (one click)"
+echo "    1. GUIDE.md Part 8  → Coolify first login (10-minute rule!)"
+echo "    2. GUIDE.md Part 9  → how your server stays alive (keepalive)"
+echo "    3. GUIDE.md Part 10 → the 100% security checklist"
+echo "    4. GUIDE.md Part 11 → connect your domain (Cloudflare)"
+echo "    5. GUIDE.md Part 12 → deploy your first Next.js app"
+echo "    6. GUIDE.md Part 13 → install WordPress (one click)"
 echo ""
 echo "  ── COST ────────────────────────────────────────────"
 echo ""
