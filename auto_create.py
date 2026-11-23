@@ -523,6 +523,31 @@ def disable_myself():
             f"'…' menu -> Disable workflow.")
 
 
+def trigger_next_run():
+    """Continuous mode: dispatch the next run right away instead of waiting
+    for GitHub's throttled cron (new */10 schedules can lag 30+ minutes).
+    Each run chains the next one; the cron stays as a safety net to restart
+    the chain if it ever breaks. Disabling the workflow stops the chain —
+    a disabled workflow cannot be dispatched."""
+    token = os.environ.get("GITHUB_TOKEN", "")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if not token or not repo:
+        return
+    try:
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/actions/workflows/{WORKFLOW_FILE}/dispatches",
+            method="POST",
+            data='{"ref":"main"}'.encode(),
+            headers={"Authorization": f"Bearer {token}",
+                     "Accept": "application/vnd.github+json",
+                     "Content-Type": "application/json"})
+        urllib.request.urlopen(request, timeout=15)
+        log("[i] Next hunt dispatched — continuous mode (a fresh run starts within seconds).")
+    except Exception as exc:
+        log(f"[i] Could not self-dispatch ({exc}) — no problem, the 10-minute cron "
+            f"schedule remains as the safety net.")
+
+
 # ─────────────────────────── main ───────────────────────────────────────────
 
 def main() -> int:
@@ -543,6 +568,8 @@ def main() -> int:
         if ip:
             announce(existing.display_name, ip)
             disable_myself()
+        else:
+            trigger_next_run()   # need one more run to finish attaching the IP
         return 0
 
     # 2 ── availability domains (we try them ALL — A1 is free in any AD)
@@ -576,6 +603,7 @@ def main() -> int:
                     disable_myself()
                 else:
                     log("[i] The reserved IP will be attached on the next run (self-healing).")
+                    trigger_next_run()
                 return 0
             kind = classify_error(error)
             if kind == "capacity":
@@ -597,9 +625,10 @@ def main() -> int:
     # 5 ── no luck this run — perfectly normal, exit 0 (no failure email spam)
     log("")
     log(f"[✓] No free slot yet — Oracle's A1 hosts in {home_region} are full right now.")
-    log("    This is the normal state. The next scheduled run keeps hunting automatically.")
+    log("    This is the normal state. The next run keeps hunting automatically.")
     log("    Typical wait: a few hours to a few days, depending on the region.")
     telegram("Oracle A1: no capacity yet — the hunt continues (this is normal).")
+    trigger_next_run()
     return 0
 
 
