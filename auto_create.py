@@ -377,7 +377,15 @@ def classify_error(exc) -> str:
         return "slow"
     if "out of host capacity" in text or "out of capacity" in text:
         return "capacity"
-    if "internal error" in text and "capacity" not in text:
+    if exc.status == 401 and "notauthenticated" in text:
+        # OCI quirk (verified in the wild): on Always Free tenancies, a launch
+        # into a COMPLETELY full AD sometimes returns 401 NotAuthenticated
+        # instead of the capacity error — while the very same credentials work
+        # on every other call (and on the other ADs) a moment earlier. A REAL
+        # auth problem is caught before the loop by the get_tenancy() pre-flight
+        # check, so a 401 here is safe to treat as capacity and retry.
+        return "capacity"
+    if "internal error" in text:
         # some regions report plain 500 InternalError for capacity too — retry anyway
         return "capacity"
     if "limit" in text and "exceed" in text:
