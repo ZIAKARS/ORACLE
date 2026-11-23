@@ -1,0 +1,81 @@
+# ============================================================================
+#  Auto-create the Oracle Always Free A1 server — 100% hands-off
+# ----------------------------------------------------------------------------
+#  GitHub runs this every 10 minutes on GitHub's own servers, 24/7, hunting
+#  for a free capacity slot. The moment Oracle frees one, your server is
+#  created with the exact GUIDE.md Part 4 spec and a RESERVED public IP,
+#  and this workflow disables itself.
+#
+#  It starts working as soon as the required secrets exist
+#  (Settings -> Secrets and variables -> Actions — see AUTO-CREATE.md).
+#  Until then every run exits with a clear "paused" message.
+#
+#  NOTE: this repo is PUBLIC on purpose — public repos get UNLIMITED free
+#  GitHub Actions minutes, which is what allows a 10-minute hunt cycle.
+#  If you switch the repo to private, change the cron to "*/30" and set
+#  ROUNDS to 1 below, to stay inside the 2,000 free minutes/month.
+# ============================================================================
+
+name: Auto-create A1 instance
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 minutes, around the clock
+  workflow_dispatch: {}       # also adds a manual "Run workflow" button
+
+permissions:
+  contents: read
+  actions: write              # lets the script disable this workflow after success
+
+concurrency:
+  group: auto-create-a1       # never two overlapping hunts
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Oracle SDK
+        run: pip install -r requirements.txt
+
+      - name: Hunt for capacity (and create the server when a slot opens)
+        run: python auto_create.py
+        env:
+          # ── credentials: GitHub Secrets (see AUTO-CREATE.md) ─────────────
+          OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+          OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+          OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+          OCI_SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
+          OCI_IMAGE_ID: ${{ secrets.OCI_IMAGE_ID }}
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+          # ── optional Telegram alert when the server lands ────────────────
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ── needed so the script can disable this workflow after success ─
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # ── server spec (edit HERE — defaults match GUIDE.md Part 4) ─────
+          SHAPE: VM.Standard.A1.Flex
+          OCPUS: "2"
+          MEMORY_GBS: "12"
+          BOOT_GB: "200"
+          DISPLAY_NAME: coolify-server
+          IMAGE_OS: "Canonical Ubuntu"
+          IMAGE_OS_VERSION: "24.04"
+          RESERVED_IP_NAME: coolify-reserved-ip
+          ROUNDS: "6"            # launch attempts per run (6 rounds × all ADs)
+          ROUND_SLEEP: "40"      # seconds between rounds
+          WORKFLOW_FILE: auto-create.yml
