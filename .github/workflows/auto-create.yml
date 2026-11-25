@@ -1,26 +1,34 @@
 # ============================================================================
 #  Auto-create the Oracle Always Free A1 server — 100% hands-off
 # ----------------------------------------------------------------------------
-#  GitHub runs this every 10 minutes on GitHub's own servers, 24/7, hunting
-#  for a free capacity slot. The moment Oracle frees one, your server is
-#  created with the exact GUIDE.md Part 4 spec and a RESERVED public IP,
-#  and this workflow disables itself.
+#  Each run hunts for ~5.5 HOURS on GitHub's own servers (retrying every
+#  ~45 s across all availability domains), then chains the next run.
+#  The moment Oracle frees a slot, your server is created with the exact
+#  GUIDE.md Part 4 spec and a RESERVED public IP, and this workflow
+#  disables itself.
+#
+#  Why ~6-hour runs instead of short 10-minute runs? Observed in the wild:
+#  GitHub silently swallows the self-dispatch after ~300 rapid chains
+#  (the chain died on 2025-11-25 after 317 runs). Long runs mean only
+#  ~4 dispatches/day — far below any abuse threshold. The dispatch is
+#  also VERIFIED and retried, an external watchdog monitors the chain,
+#  and GitHub's own cron is kept as a final safety net.
 #
 #  It starts working as soon as the required secrets exist
 #  (Settings -> Secrets and variables -> Actions — see AUTO-CREATE.md).
 #  Until then every run exits with a clear "paused" message.
 #
 #  NOTE: this repo is PUBLIC on purpose — public repos get UNLIMITED free
-#  GitHub Actions minutes, which is what allows a 10-minute hunt cycle.
-#  If you switch the repo to private, change the cron to "*/30" and set
-#  ROUNDS to 1 below, to stay inside the 2,000 free minutes/month.
+#  GitHub Actions minutes, which is what allows 24/7 hunting. If you ever
+#  switch the repo to private, this 6-hour pattern would exceed the 2,000
+#  free minutes/month — go back to short runs instead.
 # ============================================================================
 
 name: Auto-create A1 instance
 
 on:
   schedule:
-    - cron: "*/10 * * * *"   # every 10 minutes, around the clock
+    - cron: "*/30 * * * *"   # safety net only — the chain + watchdog do the real work
   workflow_dispatch: {}       # also adds a manual "Run workflow" button
 
 permissions:
@@ -33,7 +41,7 @@ concurrency:
 jobs:
   hunt:
     runs-on: ubuntu-latest
-    timeout-minutes: 9
+    timeout-minutes: 350      # ~5h50m hard cap (GitHub max is 6h)
 
     steps:
       - name: Check out the repo
@@ -76,6 +84,6 @@ jobs:
           IMAGE_OS: "Canonical Ubuntu"
           IMAGE_OS_VERSION: "24.04"
           RESERVED_IP_NAME: coolify-reserved-ip
-          ROUNDS: "6"            # launch attempts per run (6 rounds × all ADs)
+          ROUNDS: "420"          # 420 rounds × ~45 s ≈ 5h20m of hunting per run
           ROUND_SLEEP: "40"      # seconds between rounds
           WORKFLOW_FILE: auto-create.yml

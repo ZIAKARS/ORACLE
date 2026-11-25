@@ -23,6 +23,7 @@
 #  SEE AUTO-CREATE.md IN THIS REPO FOR THE 10-MINUTE SETUP WALKTHROUGH.
 # ============================================================================
 
+import json
 import os
 import sys
 import time
@@ -524,28 +525,58 @@ def disable_myself():
 
 
 def trigger_next_run():
-    """Continuous mode: dispatch the next run right away instead of waiting
-    for GitHub's throttled cron (new */10 schedules can lag 30+ minutes).
-    Each run chains the next one; the cron stays as a safety net to restart
-    the chain if it ever breaks. Disabling the workflow stops the chain —
-    a disabled workflow cannot be dispatched."""
+    """Continuous mode: dispatch the next run and VERIFY it actually got
+    queued. GitHub can silently swallow repetitive self-dispatches (observed
+    in the wild: the chain died after ~300 rapid dispatches on 2025-11-25 —
+    the POST succeeded but no successor run ever appeared, and GitHub's own
+    cron barely fires). Countermeasures, all combined:
+      1. runs are LONG (~6 h of hunting each) -> only ~4 dispatches/day
+      2. each dispatch is verified by checking that a newer run exists
+      3. 3 attempts with 60 s backoff
+      4. an external watchdog restarts the chain if everything else fails.
+    Disabling the workflow also stops the chain (a disabled workflow cannot
+    be dispatched)."""
     token = os.environ.get("GITHUB_TOKEN", "")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
+    my_run_id = os.environ.get("GITHUB_RUN_ID", "")
     if not token or not repo:
         return
-    try:
-        request = urllib.request.Request(
-            f"https://api.github.com/repos/{repo}/actions/workflows/{WORKFLOW_FILE}/dispatches",
-            method="POST",
-            data='{"ref":"main"}'.encode(),
-            headers={"Authorization": f"Bearer {token}",
-                     "Accept": "application/vnd.github+json",
-                     "Content-Type": "application/json"})
-        urllib.request.urlopen(request, timeout=15)
-        log("[i] Next hunt dispatched — continuous mode (a fresh run starts within seconds).")
-    except Exception as exc:
-        log(f"[i] Could not self-dispatch ({exc}) — no problem, the 10-minute cron "
-            f"schedule remains as the safety net.")
+    headers = {"Authorization": f"Bearer {token}",
+               "Accept": "application/vnd.github+json"}
+    my_id = int(my_run_id) if my_run_id.isdigit() else 0
+    for attempt in range(1, 4):
+        post_ok = False
+        try:
+            request = urllib.request.Request(
+                f"https://api.github.com/repos/{repo}/actions/workflows/{WORKFLOW_FILE}/dispatches",
+                method="POST",
+                data='{"ref":"main"}'.encode(),
+                headers={**headers, "Content-Type": "application/json"})
+            urllib.request.urlopen(request, timeout=15)
+            post_ok = True
+        except Exception as exc:
+            log(f"[i] self-dispatch attempt {attempt}/3 rejected: {exc}")
+        if post_ok:
+            # GitHub sometimes accepts the POST but never queues a run —
+            # verify a successor run really exists before trusting it.
+            time.sleep(15)
+            try:
+                req2 = urllib.request.Request(
+                    f"https://api.github.com/repos/{repo}/actions/runs?per_page=5",
+                    headers=headers)
+                runs = json.load(urllib.request.urlopen(req2, timeout=15))["workflow_runs"]
+                has_successor = any(r["id"] > my_id for r in runs) if my_id else bool(runs)
+                if has_successor:
+                    log("[i] Next hunt dispatched AND verified queued — continuous mode.")
+                    return
+                log("[i] Dispatch accepted but no successor run appeared — retrying…")
+            except Exception as exc:
+                log(f"[i] Could not verify the successor run: {exc}")
+        if attempt < 3:
+            time.sleep(60)
+    log("[i] Could not self-dispatch after 3 attempts. The external watchdog "
+        "(and GitHub's own cron) will restart the hunt automatically — no "
+        "action needed.")
 
 
 # ─────────────────────────── main ───────────────────────────────────────────
